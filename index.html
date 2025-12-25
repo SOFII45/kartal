@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>KARTAL 1903 - PREMİUM</title>
+    <link href="https://fonts.googleapis.com/css2?family=Orbitron:wght@400;900&display=swap" rel="stylesheet">
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Orbitron', sans-serif; touch-action: none; }
+        #hud {
+            position: absolute; top: 20px; left: 20px; color: white;
+            padding: 20px; border-left: 5px solid #fff;
+            background: linear-gradient(90deg, rgba(0,0,0,0.8), transparent);
+            backdrop-filter: blur(10px); z-index: 100; pointer-events: none;
+        }
+        #boost-wrap { width: 200px; height: 6px; background: rgba(255,255,255,0.1); margin-top: 10px; border-radius: 3px; overflow: hidden; }
+        #boost-bar { width: 0%; height: 100%; background: #fff; box-shadow: 0 0 20px #fff; }
+        #start-screen {
+            position: absolute; width: 100%; height: 100%; background: radial-gradient(circle, #222 0%, #000 100%);
+            display: flex; flex-direction: column; justify-content: center; align-items: center;
+            color: white; z-index: 1000; text-align: center; cursor: pointer;
+        }
+        canvas { display: block; filter: contrast(1.2) brightness(1.1); }
+        .btn { margin-top: 20px; padding: 15px 45px; border: 2px solid #fff; background: #fff; color: #000; font-family: 'Orbitron'; font-weight: 900; letter-spacing: 2px; cursor: pointer; }
+    </style>
+</head>
+<body>
+    <div id="start-screen" onclick="startGame()">
+        <h1 style="font-size: 60px; margin: 0; text-shadow: 0 0 30px #fff;">KARTAL 1903</h1>
+        <div id="menu-high-score" style="color: #FFD700; margin-top: 10px; letter-spacing: 3px;">REKOR: 00000</div>
+        <button class="btn">SAVAŞA BAŞLA</button>
+    </div>
+
+    <div id="hud">
+        <div style="font-size: 10px; letter-spacing: 3px; opacity: 0.7;">BEŞİKTAŞ ORDUSU</div>
+        <div id="score" style="font-size: 45px; font-weight: 900; line-height: 1;">00000</div>
+        <div style="color: #FFD700; font-size: 14px; margin-top: 5px;">REKOR: <span id="high-score-val">00000</span></div>
+        <div id="boost-wrap"><div id="boost-bar"></div></div>
+    </div>
+    <canvas id="c"></canvas>
+
+<script>
+// --- AUDIO ENGINE ---
+const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+function playSound(freq, type, duration, vol, slide=0) {
+    try {
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = type;
+        osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+        if(slide) osc.frequency.exponentialRampToValueAtTime(freq * slide, audioCtx.currentTime + duration);
+        gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+        gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+        osc.connect(gain); gain.connect(audioCtx.destination);
+        osc.start(); osc.stop(audioCtx.currentTime + duration);
+    } catch(e) {}
+}
+
+// --- GAME ENGINE ---
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+let shake = 0; // Update içinde shake > 0 ise canvası titret
+let w, h, pX, lanes, alive = false;
+let score = 0, gameSpeed = 8, isBoosting = false, boostLevel = 0, currentLane = 1;
+let enemies = [], BJKSymbols = [], particles = [], trail = [];
+let stars = Array.from({length: 100}, () => ({x: Math.random()*2000, y: Math.random()*2000, s: Math.random()*2.5, o: Math.random()}));
+let highScore = localStorage.getItem('kartalHighScore') || 0;
+
+function resize() {
+    w = canvas.width = window.innerWidth;
+    h = canvas.height = window.innerHeight;
+    lanes = [w * 0.28, w * 0.5, w * 0.72];
+    pX = lanes[1];
+    document.getElementById('high-score-val').innerText = highScore.toString().padStart(5, '0');
+    document.getElementById('menu-high-score').innerText = "REKOR: " + highScore.toString().padStart(5, '0');
+}
+window.addEventListener('resize', resize);
+resize();
+
+function draw() {
+    ctx.save();
+    if (shake > 0) {
+        ctx.translate(Math.random()*shake - shake/2, Math.random()*shake - shake/2);
+        shake *= 0.9; // Titreme sönümlenir
+    }
+    // ... tüm çizim kodları buraya ...
+    ctx.restore();
+}
+
+function createParticles(x, y, color, count=12) {
+    for(let i=0; i<count; i++) {
+        particles.push({
+            x, y, 
+            vx: (Math.random()-0.5)*18, 
+            vy: (Math.random()-0.5)*18, 
+            life: 1, color
+        });
+    }
+}
+
+function drawUltraEagle(x, y) {
+    ctx.save();
+    ctx.translate(x, y);
+    const flap = Math.sin(Date.now() / (isBoosting ? 40 : 120)) * 35;
+    
+    // Eagle Trail (İz)
+    if(isBoosting || gameSpeed > 15) {
+        trail.push({x: pX, y: h-150, r: 15, a: 0.6});
+    }
+
+    // Kanatlar (Gelişmiş Çizim)
+    ctx.shadowBlur = isBoosting ? 40 : 15;
+    ctx.shadowColor = "#fff";
+    ctx.fillStyle = "#111";
+    ctx.beginPath();
+    ctx.moveTo(-110, flap); 
+    ctx.bezierCurveTo(-50, -50, 50, -50, 110, flap);
+    ctx.lineTo(0, 25);
+    ctx.fill();
+
+    // Gövde
+    ctx.fillStyle = "#fff";
+    ctx.beginPath(); ctx.ellipse(0, 0, 20, 40, 0, 0, Math.PI*2); ctx.fill();
+
+    // Gözler (Neon Kırmızı)
+    ctx.fillStyle = "#f00";
+    ctx.shadowBlur = 10; ctx.shadowColor = "red";
+    ctx.beginPath(); ctx.arc(-7, -25, 3, 0, Math.PI*2); ctx.arc(7, -25, 3, 0, Math.PI*2); ctx.fill();
+    ctx.restore();
+}
+
+function update() {
+    if(!alive) return;
+    pX += (lanes[currentLane] - pX) * 0.18;
+    score += isBoosting ? 8 : 0.2;
+    gameSpeed = isBoosting ? 26 : (8 + (score/2000));
+    
+    document.getElementById('score').innerText = Math.floor(score).toString().padStart(5, '0');
+
+    if(Math.random() < 0.05) {
+        let l = lanes[Math.floor(Math.random()*3)];
+        if(Math.random() < 0.8) enemies.push({x: l, y: -100, c: Math.random() > 0.5 ? "#ff0044" : "#0066ff"});
+        else BJKSymbols.push({x: l, y: -100});
+    }
+
+    enemies.forEach((e, i) => {
+        e.y += gameSpeed;
+        // Hitbox: Sadece gövdeye yakınsa çarpışma sayılır
+        if(Math.abs(e.x - pX) < 55 && Math.abs(e.y - (h-150)) < 40) {
+            if(!isBoosting) {
+                playSound(60, 'sawtooth', 0.8, 0.3, 0.5);
+                alive = false;
+                if(score > highScore) localStorage.setItem('kartalHighScore', Math.floor(score));
+                setTimeout(() => { location.reload(); }, 100);
+            } else {
+                playSound(400, 'sine', 0.2, 0.1);
+                createParticles(e.x, e.y, e.c, 20);
+                enemies.splice(i, 1);
+            }
+        }
+        if(e.y > h) enemies.splice(i, 1);
+    });
+
+    BJKSymbols.forEach((s, i) => {
+        s.y += gameSpeed;
+        if(Math.abs(s.x - pX) < 60 && Math.abs(s.y - (h-150)) < 50) {
+            playSound(880, 'sine', 0.3, 0.15, 1.5);
+            createParticles(s.x, s.y, "#fff", 25);
+            boostLevel = Math.min(100, boostLevel + 34); 
+            BJKSymbols.splice(i, 1);
+            if(boostLevel >= 100 && !isBoosting) {
+                isBoosting = true;
+                playSound(200, 'sawtooth', 0.5, 0.2, 2);
+            }
+        }
+    });
+
+    if(isBoosting) {
+        boostLevel -= 0.45;
+        if(boostLevel <= 0) isBoosting = false;
+    }
+    document.getElementById('boost-bar').style.width = boostLevel + "%";
+}
+
+function draw() {
+    ctx.fillStyle = "#000";
+    ctx.fillRect(0, 0, w, h);
+
+    // Yıldızlar
+    stars.forEach(s => {
+        s.y += gameSpeed * 0.1;
+        if(s.y > h) s.y = 0;
+        ctx.fillStyle = `rgba(255,255,255,${s.o})`;
+        ctx.fillRect(s.x % w, s.y, s.s, s.s);
+    });
+
+    // Trail
+    trail.forEach((t, i) => {
+        ctx.fillStyle = `rgba(255,255,255,${t.a})`;
+        ctx.beginPath(); ctx.arc(t.x, t.y, t.r, 0, Math.PI*2); ctx.fill();
+        t.a -= 0.03; t.r += 0.8;
+        if(t.a <= 0) trail.splice(i, 1);
+    });
+
+    // Particles
+    particles.forEach((p, i) => {
+        p.x += p.vx; p.y += p.vy; p.life -= 0.02;
+        ctx.fillStyle = p.color;
+        ctx.globalAlpha = p.life;
+        ctx.fillRect(p.x, p.y, 4, 4);
+        if(p.life <= 0) particles.splice(i, 1);
+    });
+    ctx.globalAlpha = 1;
+
+    // Neon Enemies
+    enemies.forEach(e => {
+        ctx.shadowBlur = 20; ctx.shadowColor = e.c;
+        ctx.fillStyle = e.c;
+        ctx.beginPath();
+        ctx.moveTo(e.x, e.y - 25); ctx.lineTo(e.x + 25, e.y + 20); ctx.lineTo(e.x - 25, e.y + 20);
+        ctx.closePath(); ctx.fill();
+    });
+
+    // 1903 Logos
+    BJKSymbols.forEach(s => {
+        ctx.shadowBlur = 30; ctx.shadowColor = "#fff";
+        ctx.fillStyle = "#fff";
+        ctx.beginPath(); ctx.arc(s.x, s.y, 22, 0, Math.PI*2); ctx.fill();
+        ctx.fillStyle = "#000"; ctx.font = "bold 13px Orbitron"; ctx.textAlign = "center";
+        ctx.fillText("1903", s.x, s.y + 5);
+    });
+    ctx.shadowBlur = 0;
+
+    drawUltraEagle(pX, h - 150);
+
+    // Boost Speed Lines
+    if(isBoosting) {
+        ctx.strokeStyle = "rgba(255,255,255,0.4)";
+        for(let i=0; i<15; i++) {
+            let rx = (Math.random()*w);
+            ctx.beginPath(); ctx.moveTo(rx, 0); ctx.lineTo(rx, h); ctx.stroke();
+        }
+    }
+}
+
+function startGame() {
+    document.getElementById('start-screen').style.display = 'none';
+    alive = true;
+    audioCtx.resume();
+    loop();
+}
+
+function loop() { update(); draw(); if(alive) requestAnimationFrame(loop); }
+
+window.addEventListener('keydown', (e) => {
+    if(e.key === "ArrowLeft" && currentLane > 0) currentLane--;
+    if(e.key === "ArrowRight" && currentLane < 2) currentLane++;
+});
+window.addEventListener('touchstart', (e) => {
+    const tx = e.touches[0].clientX;
+    if(tx < w/2 && currentLane > 0) currentLane--;
+    else if(tx > w/2 && currentLane < 2) currentLane++;
+});
+</script>
+</body>
+</html>
